@@ -1,0 +1,3 @@
+config BR2_PACKAGE_GOOGLE_WIDEVINE_CENC
+	bool 'google_widevine_cenc'
+
