@@ -10,8 +10,8 @@
     'device_name%': '"Spacecastgfsc100"',
     'product_name%': '"Spacecastgfsc100"',
     'buildinfo_data%': '"UndefinedBuildInfo"',
-    'oemcrypto_target%': '../oemcrypto/mock/oec_mock.gyp:oec_mock',
-    'oemcrypto_v8%': 'false',
+    'oemcrypto_version': 10,
+    'oemcrypto_target': '<(DEPTH)/platforms/spacecast/oemcrypto/oemcrypto.gyp:oemcrypto',
     'certificate_provision%': 'false',
     'force_use_of_secure_buffers%': 'false',
     'privacy_crypto_impl%': 'openssl',
@@ -34,7 +34,7 @@
     # Make sure that a valid config.h for your target is in the source tree.
     'protobuf_lib_type%': 'system',
     'protobuf_lib%': '-lprotobuf',
-    'protoc_dir%': '/usr/bin',
+    #'protoc_dir%': 'usr/bin/protoc',
   }, # end variables
 
   'target_defaults': {
