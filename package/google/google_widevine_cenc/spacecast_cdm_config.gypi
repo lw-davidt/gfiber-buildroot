@@ -11,7 +11,7 @@
     'product_name%': '"Spacecastgfsc100"',
     'buildinfo_data%': '"UndefinedBuildInfo"',
     'oemcrypto_version': 10,
-    'oemcrypto_target': '<(DEPTH)/platforms/spacecast/oemcrypto/oemcrypto.gyp:oemcrypto',
+    'oemcrypto_target': '<(DEPTH)/platforms/spacecast/oemcrypto/oemcrypto.gyp:oec_mock',
     'certificate_provision%': 'false',
     'force_use_of_secure_buffers%': 'false',
     'privacy_crypto_impl%': 'openssl',
