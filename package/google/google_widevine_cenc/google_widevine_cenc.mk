@@ -5,7 +5,8 @@ GOOGLE_WIDEVINE_CENC_INSTALL_STAGING = YES
 
 GOOGLE_WIDEVINE_CENC_DEPENDENCIES = protobuf \
 				    host-protobuf \
-				    host-gyp
+				    host-gyp \
+				    openssl
 
 define GOOGLE_WIDEVINE_CENC_BUILD_CMDS
 	export PATH=$(TARGET_PATH):$$PATH ; \
@@ -22,8 +23,9 @@ define GOOGLE_WIDEVINE_CENC_BUILD_CMDS
 endef
 
 define GOOGLE_WIDEVINE_CENC_FIX_PATH
-        ln -sf "$(@D)"/wrappers/go/src/gowvcdmstream "$(BUILD_DIR)/go_pkgs/src/"
-        ln -sf "$(@D)"/wrappers/go/src/gowvcdm "$(BUILD_DIR)/go_pkgs/src/"
+        mkdir -p "$(BUILD_DIR)/go_pkgs/src"
+        ln -sfT "$(@D)"/wrappers/go/src/gowvcdmstream "$(BUILD_DIR)/go_pkgs/src/gowvcdmstream"
+        ln -sfT "$(@D)"/wrappers/go/src/gowvcdm "$(BUILD_DIR)/go_pkgs/src/gowvcdm"
 endef
 
 GOOGLE_WIDEVINE_CENC_POST_PATCH_HOOKS += GOOGLE_WIDEVINE_CENC_FIX_PATH
