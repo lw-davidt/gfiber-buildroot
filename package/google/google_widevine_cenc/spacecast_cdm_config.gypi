@@ -4,17 +4,17 @@
   # This file and the platform-specific gypi are included in every gyp file.
 
   'variables': {
-    'company_name%': '"Google"',
-    'model_name%': '"Spacecastgfsc100"',
-    'architecture_name%': '"Freescale QorIQ-LS1024A"',
-    'device_name%': '"Spacecastgfsc100"',
-    'product_name%': '"Spacecastgfsc100"',
-    'buildinfo_data%': '"UndefinedBuildInfo"',
+    'company_name': '"Google"',
+    'model_name': '"Spacecastgfsc100"',
+    'architecture_name': '"Freescale QorIQ-LS1024A"',
+    'device_name': '"Spacecastgfsc100"',
+    'product_name': '"Spacecastgfsc100"',
+    'buildinfo_data': '"UndefinedBuildInfo"',
     'oemcrypto_version': 10,
     'oemcrypto_target': '<(DEPTH)/platforms/spacecast/oemcrypto/oemcrypto.gyp:oec_mock',
-    'certificate_provision%': 'false',
-    'force_use_of_secure_buffers%': 'false',
-    'privacy_crypto_impl%': 'openssl',
+    'certificate_provision': 'false',
+    'force_use_of_secure_buffers': 'false',
+    'privacy_crypto_impl': 'openssl',
 
     # There are three protobuf configurations:
     #
