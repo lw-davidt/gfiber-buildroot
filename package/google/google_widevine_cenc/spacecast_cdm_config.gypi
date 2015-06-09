@@ -12,6 +12,7 @@
     'buildinfo_data': '"UndefinedBuildInfo"',
     'oemcrypto_version': 10,
     'oemcrypto_target': '<(DEPTH)/platforms/spacecast/oemcrypto/oemcrypto.gyp:oec_mock',
+    'oemcrypto_max_sessions': '500',
     'certificate_provision': 'false',
     'force_use_of_secure_buffers': 'false',
     'privacy_crypto_impl': 'openssl',
@@ -57,6 +58,7 @@
       }]
     ], # end target_conditions
     'defines': [
+      'MAX_NUMBER_OF_OEMCRYPTO_SESSIONS=<(oemcrypto_max_sessions)',
       'PLATFORM_COMPANY_NAME_WV=<(company_name)',
       'PLATFORM_MODEL_NAME_WV=<(model_name)',
       'PLATFORM_ARCHITECTURE_NAME_WV=<(architecture_name)',
