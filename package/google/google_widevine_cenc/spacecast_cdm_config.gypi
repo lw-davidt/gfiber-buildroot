@@ -13,6 +13,7 @@
     'oemcrypto_version': 10,
     'oemcrypto_target': '<(DEPTH)/platforms/spacecast/oemcrypto/oemcrypto.gyp:oec_mock',
     'oemcrypto_max_sessions': '500',
+    'oemcrypto_nonce_flood_threshold': '300',
     'certificate_provision': 'false',
     'force_use_of_secure_buffers': 'false',
     'privacy_crypto_impl': 'openssl',
@@ -55,10 +56,11 @@
     'target_conditions': [
       ['_type=="static_library"', {
         'standalone_static_library': 1,
-      }]
+      }],
     ], # end target_conditions
     'defines': [
       'MAX_NUMBER_OF_OEMCRYPTO_SESSIONS=<(oemcrypto_max_sessions)',
+      'MAX_NONCE_PER_SECOND=<(oemcrypto_nonce_flood_threshold)',
       'PLATFORM_COMPANY_NAME_WV=<(company_name)',
       'PLATFORM_MODEL_NAME_WV=<(model_name)',
       'PLATFORM_ARCHITECTURE_NAME_WV=<(architecture_name)',
