@@ -14,7 +14,7 @@
     'oemcrypto_target': '<(DEPTH)/platforms/spacecast/oemcrypto/oemcrypto.gyp:oec_mock',
     'oemcrypto_max_sessions': '500',
     'oemcrypto_nonce_flood_threshold': '300',
-    'certificate_provision': 'false',
+    'certificate_provision': 'true',
     'force_use_of_secure_buffers': 'false',
     'privacy_crypto_impl': 'openssl',
 
