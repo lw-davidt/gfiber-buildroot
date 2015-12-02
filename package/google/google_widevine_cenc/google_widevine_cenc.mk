@@ -26,6 +26,8 @@ define GOOGLE_WIDEVINE_CENC_FIX_PATH
         mkdir -p "$(BUILD_DIR)/go_pkgs/src"
         ln -sfT "$(@D)"/wrappers/go/src/gowvcdmstream "$(BUILD_DIR)/go_pkgs/src/gowvcdmstream"
         ln -sfT "$(@D)"/wrappers/go/src/gowvcdm "$(BUILD_DIR)/go_pkgs/src/gowvcdm"
+        ln -sfT "$(@D)"/wrappers/go/src/video_drm "$(BUILD_DIR)/go_pkgs/src/video_drm"
+        ln -sfT "$(@D)"/wrappers/go/src/video_widevine_server_sdk "$(BUILD_DIR)/go_pkgs/src/video_widevine_server_sdk"
 endef
 
 GOOGLE_WIDEVINE_CENC_POST_PATCH_HOOKS += GOOGLE_WIDEVINE_CENC_FIX_PATH
