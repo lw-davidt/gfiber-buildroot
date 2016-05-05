@@ -5,7 +5,9 @@
 #include "oemcrypto_engine_mock.h"
 
 #include <arpa/inet.h>
+#include <assert.h>
 #include <string.h>
+#include <algorithm>
 #include <iostream>
 #include <vector>
 
@@ -20,6 +22,7 @@
 #include <openssl/sha.h>
 #include <openssl/x509.h>
 
+#include "keys.h"
 #include "log.h"
 #include "oemcrypto_key_mock.h"
 #include "oemcrypto_logging.h"
@@ -406,46 +409,46 @@ size_t SessionContext::RSASignatureSize() {
   return static_cast<size_t>(RSA_size(rsa_key_));
 }
 
-bool SessionContext::GenerateRSASignature(const uint8_t* message,
-                                          size_t message_length,
-                                          uint8_t* signature,
-                                          size_t* signature_length,
-                                          RSA_Padding_Scheme padding_scheme) {
+OEMCryptoResult SessionContext::GenerateRSASignature(
+    const uint8_t* message, size_t message_length, uint8_t* signature,
+    size_t* signature_length, RSA_Padding_Scheme padding_scheme) {
   if (message == NULL || message_length == 0 ||
       signature == NULL || signature_length == 0) {
     LOGE("[GenerateRSASignature(): OEMCrypto_ERROR_INVALID_CONTEXT]");
-    return false;
+    return OEMCrypto_ERROR_INVALID_CONTEXT;
   }
   if (!rsa_key_) {
     LOGE("[GenerateRSASignature(): no RSA key set]");
-    return false;
+    return OEMCrypto_ERROR_INVALID_RSA_KEY;
   }
   if (*signature_length < static_cast<size_t>(RSA_size(rsa_key_))) {
     *signature_length = RSA_size(rsa_key_);
-    return false;
+    return OEMCrypto_ERROR_SHORT_BUFFER;
   }
   if ((padding_scheme & allowed_schemes_) != padding_scheme) {
     LOGE("[GenerateRSASignature(): padding_scheme not allowed]");
-    return false;
+    return OEMCrypto_ERROR_INVALID_RSA_KEY;
   }
 
+  // This is the standard padding scheme used for license requests.
   if (padding_scheme == kSign_RSASSA_PSS) {
     // Hash the message using SHA1.
     uint8_t hash[SHA_DIGEST_LENGTH];
     if (!SHA1(message, message_length, hash)) {
       LOGE("[GeneratRSASignature(): error creating signature hash.]");
       dump_openssl_error();
-      return false;
+      return OEMCrypto_ERROR_UNKNOWN_FAILURE;
     }
 
     // Add PSS padding.
     std::vector<uint8_t> padded_digest(*signature_length);
-    int status = RSA_padding_add_PKCS1_PSS(rsa_key_, &padded_digest[0], hash,
-                                           EVP_sha1(), kPssSaltLength);
+    int status = RSA_padding_add_PKCS1_PSS_mgf1(rsa_key_, &padded_digest[0],
+                                                hash, EVP_sha1(), NULL,
+                                                kPssSaltLength);
     if (status == -1) {
       LOGE("[GeneratRSASignature(): error padding hash.]");
       dump_openssl_error();
-      return false;
+      return OEMCrypto_ERROR_UNKNOWN_FAILURE;
     }
 
     // Encrypt PSS padded digest.
@@ -454,12 +457,13 @@ bool SessionContext::GenerateRSASignature(const uint8_t* message,
     if (status == -1) {
       LOGE("[GeneratRSASignature(): error in private encrypt.]");
       dump_openssl_error();
-      return false;
+      return OEMCrypto_ERROR_UNKNOWN_FAILURE;
     }
+    // This is the alternate padding scheme used by cast receivers only.
   } else if (padding_scheme == kSign_PKCS1_Block1) {
     if (message_length > 83) {
       LOGE("[GeneratRSASignature(): RSA digest too large.]");
-      return false;
+      return OEMCrypto_ERROR_SIGNATURE_FAILURE;
     }
     // Pad the message with PKCS1 padding, and then encrypt.
     size_t status = RSA_private_encrypt(message_length, message, signature,
@@ -467,12 +471,12 @@ bool SessionContext::GenerateRSASignature(const uint8_t* message,
     if (status != *signature_length) {
       LOGE("[GeneratRSASignature(): error in RSA private encrypt. status=%d]", status);
       dump_openssl_error();
-      return false;
+      return OEMCrypto_ERROR_UNKNOWN_FAILURE;
     }
   } else {  // Bad RSA_Padding_Scheme
-    return false;
+    return OEMCrypto_ERROR_INVALID_RSA_KEY;
   }
-  return true;
+  return OEMCrypto_SUCCESS;
 }
 
 // Validate message signature
@@ -602,7 +606,8 @@ OEMCryptoResult SessionContext::LoadKeys(
                           key_array[i].key_control_iv + wvcdm::KEY_IV_SIZE);
 
     if (!InstallKey(key_id, enc_key_data, key_data_iv, key_control,
-                    key_control_iv, pstv)) {
+                    key_control_iv, pstv,
+                    key_array[i].cipher_mode == OEMCrypto_CipherMode_CTR)) {
       status = false;
       break;
     }
@@ -619,11 +624,17 @@ OEMCryptoResult SessionContext::LoadKeys(
         enc_mac_key_iv, enc_mac_key_iv + wvcdm::KEY_IV_SIZE);
 
     if (!UpdateMacKeys(enc_mac_keys_str, enc_mac_key_iv_str)) {
+      LOGE("Failed to update mac keys.\n");
       return OEMCrypto_ERROR_UNKNOWN_FAILURE;
     }
   }
-  if (usage_entry_) {
+  if (pst_length > 0) {
+    if (!usage_entry_) {
+      LOGE("Usage table entry not found.\n");
+      return OEMCrypto_ERROR_UNKNOWN_FAILURE;
+    }
     if (!usage_entry_->VerifyOrSetMacKeys(mac_key_server_, mac_key_client_)) {
+      LOGE("Usage table entry does not match.\n");
       return OEMCrypto_ERROR_UNKNOWN_FAILURE;
     }
   }
@@ -635,7 +646,8 @@ bool SessionContext::InstallKey(const KeyId& key_id,
                                 const std::vector<uint8_t>& key_data_iv,
                                 const std::vector<uint8_t>& key_control,
                                 const std::vector<uint8_t>& key_control_iv,
-                                const std::vector<uint8_t>& pst) {
+                                const std::vector<uint8_t>& pst,
+                                bool ctr_mode) {
   // Decrypt encrypted key_data using derived encryption key and offered iv
   std::vector<uint8_t> content_key;
   std::vector<uint8_t> key_control_str;
@@ -675,9 +687,17 @@ bool SessionContext::InstallKey(const KeyId& key_id,
     return false;
   }
   if ((key_control_block.control_bits() &
-      kControlRequireAntiRollbackHardware) &&
+       kControlRequireAntiRollbackHardware) &&
       !ce_->is_anti_rollback_hw_present()) {
     LOGE("Anti-rollback hardware is required but hardware not present.");
+    return false;
+  }
+  uint8_t minimum_patch_level =
+      (key_control_block.control_bits() & kControlSecurityPatchLevelMask) >>
+      kControlSecurityPatchLevelShift;
+  if (minimum_patch_level > OEMCrypto_Security_Patch_Level()) {
+    LOGE("[InstallKey(): security patch level: %d.  Minimum:%d]",
+         OEMCrypto_Security_Patch_Level(), minimum_patch_level);
     return false;
   }
 
@@ -686,29 +706,29 @@ bool SessionContext::InstallKey(const KeyId& key_id,
     return false;
   }
 
-  Key key(content_key, key_control_block);
+  Key key(content_key, key_control_block, ctr_mode);
   session_keys_.Insert(key_id, key);
   return true;
 }
 
-bool SessionContext::RefreshKey(const KeyId& key_id,
-                                const std::vector<uint8_t>& key_control,
-                                const std::vector<uint8_t>& key_control_iv) {
+OEMCryptoResult SessionContext::RefreshKey(
+    const KeyId& key_id, const std::vector<uint8_t>& key_control,
+    const std::vector<uint8_t>& key_control_iv) {
   if (key_id.empty()) {
     // Key control is not encrypted if key id is NULL
     KeyControlBlock key_control_block(key_control);
     if (!key_control_block.valid()) {
       LOGE("Parse key control error.");
-      return false;
+      return OEMCrypto_ERROR_INVALID_CONTEXT;
     }
     if ((key_control_block.control_bits() & kControlNonceEnabled) &&
         (!CheckNonce(key_control_block.nonce()))) {
       LOGE("KCB: BAD Nonce");
-      return false;
+      return OEMCrypto_ERROR_INVALID_NONCE;
     }
     // Apply duration to all keys in this session
     session_keys_.UpdateDuration(key_control_block);
-    return true;
+    return OEMCrypto_SUCCESS;
   }
 
   Key* content_key = session_keys_.Find(key_id);
@@ -717,14 +737,14 @@ bool SessionContext::RefreshKey(const KeyId& key_id,
     if (LogCategoryEnabled(kLoggingDumpKeyControlBlocks)) {
       LOGD("Error: no matching content key.");
     }
-    return false;
+    return OEMCrypto_ERROR_UNKNOWN_FAILURE;
   }
 
   if (key_control.empty()) {
     if (LogCategoryEnabled(kLoggingDumpKeyControlBlocks)) {
       LOGD("Error: no key_control.");
     }
-    return false;
+    return OEMCrypto_ERROR_UNKNOWN_FAILURE;
   }
 
   const std::vector<uint8_t> content_key_value = content_key->value();
@@ -745,7 +765,7 @@ bool SessionContext::RefreshKey(const KeyId& key_id,
       if (LogCategoryEnabled(kLoggingDumpKeyControlBlocks)) {
         LOGD("Error decrypting key control block.");
       }
-      return false;
+      return OEMCrypto_ERROR_UNKNOWN_FAILURE;
     }
   }
 
@@ -754,15 +774,15 @@ bool SessionContext::RefreshKey(const KeyId& key_id,
     if (LogCategoryEnabled(kLoggingDumpKeyControlBlocks)) {
       LOGD("Parse key control error.");
     }
-    return false;
+    return OEMCrypto_ERROR_INVALID_CONTEXT;
   }
   if ((key_control_block.control_bits() & kControlNonceEnabled) &&
       (!CheckNonce(key_control_block.nonce()))) {
     LOGE("KCB: BAD Nonce");
-    return false;
+    return OEMCrypto_ERROR_INVALID_NONCE;
   }
   content_key->UpdateDuration(key_control_block);
-  return true;
+  return OEMCrypto_SUCCESS;
 }
 
 bool  SessionContext::DecryptRSAKey(const uint8_t* enc_rsa_key,
@@ -1107,8 +1127,12 @@ bool SessionContext::QueryKeyControlBlock(const KeyId& key_id, uint32_t* data) {
   if (LogCategoryEnabled(kLoggingTraceDecryption)){
     LOGI(( "Select Key: key_id = " +
           wvcdm::b2a_hex(key_id) ).c_str());
-    LOGI(( "Select Key: key = " +
-          wvcdm::b2a_hex(content_key->value()) ).c_str());
+    if (content_key) {
+      LOGI(( "Select Key: key = " +
+             wvcdm::b2a_hex(content_key->value()) ).c_str());
+    } else {
+      LOGI("Select Key: key = null.");
+    }
   }
   if (NULL == content_key) {
     LOGE("[QueryKeyControlBlock(): No key matches key id]");
@@ -1162,6 +1186,11 @@ CryptoEngine::CryptoEngine()
     : current_session_(NULL), use_test_keybox_(false),
       usage_table_(new UsageTable(this)), rsa_key_(NULL) {
   ERR_load_crypto_strings();
+
+  if (!supports_keybox() && !LoadPkcs8RsaKey(kPrivateKey, kPrivateKeySize)) {
+    LOGE("FATAL ERROR: Platform uses a baked-in certificate instead of a "
+         "keybox, but the certificate could not be loaded.");
+  }
 }
 
 CryptoEngine::~CryptoEngine() {
@@ -1170,8 +1199,7 @@ CryptoEngine::~CryptoEngine() {
   if (usage_table_) delete usage_table_;
 }
 
-void CryptoEngine::Terminate() {
-}
+void CryptoEngine::Terminate() {}
 
 KeyboxError CryptoEngine::ValidateKeybox() { return keybox().Validate(); }
 
@@ -1180,59 +1208,8 @@ bool CryptoEngine::LoadTestRSAKey() {
     RSA_free(rsa_key_);
     rsa_key_ = NULL;
   }
-  uint8_t *pkcs8_rsa_key
-      = const_cast<uint8_t *>(kTestRSAPKCS8PrivateKeyInfo2_2048);
-  size_t rsa_key_length = sizeof(kTestRSAPKCS8PrivateKeyInfo2_2048);
-  BIO *bio = BIO_new_mem_buf(pkcs8_rsa_key, rsa_key_length);
-  if ( bio == NULL ) {
-    LOGE("[LoadTestRSAKey(): Could not allocate bio buffer]");
-    return false;
-  }
-  bool success = true;
-  PKCS8_PRIV_KEY_INFO *pkcs8_pki = d2i_PKCS8_PRIV_KEY_INFO_bio(bio, NULL);
-  if (pkcs8_pki == NULL) {
-    LOGE("d2i_PKCS8_PRIV_KEY_INFO_bio returned NULL.");
-    success = false;
-  }
-  EVP_PKEY *evp = NULL;
-  if (success) {
-    evp = EVP_PKCS82PKEY(pkcs8_pki);
-    if (evp == NULL) {
-      LOGE("EVP_PKCS82PKEY returned NULL.");
-      success = false;
-    }
-  }
-  if (success) {
-    rsa_key_ = EVP_PKEY_get1_RSA(evp);
-    if (rsa_key_ == NULL) {
-      LOGE("PrivateKeyInfo did not contain an RSA key.");
-      success = false;
-    }
-  }
-  if (evp != NULL) {
-    EVP_PKEY_free(evp);
-  }
-  if (pkcs8_pki != NULL) {
-    PKCS8_PRIV_KEY_INFO_free(pkcs8_pki);
-  }
-  BIO_free(bio);
-  if (!success) {
-    return false;
-  }
-  switch (RSA_check_key(rsa_key_)) {
-  case 1:  // valid.
-    return true;
-  case 0:  // not valid.
-    LOGE("[LoadTestRSAKey(): rsa key not valid]");
-    dump_openssl_error();
-    return false;
-  default:  // -1 == check failed.
-    LOGE("[LoadTestRSAKey(): error checking rsa key]");
-    dump_openssl_error();
-    return false;
-  }
-
-
+  return LoadPkcs8RsaKey(kTestRSAPKCS8PrivateKeyInfo2_2048,
+                         sizeof(kTestRSAPKCS8PrivateKeyInfo2_2048));
 }
 
 SessionId CryptoEngine::CreateSession() {
@@ -1265,6 +1242,59 @@ SessionContext* CryptoEngine::FindSession(SessionId sid) {
   return NULL;
 }
 
+bool CryptoEngine::LoadPkcs8RsaKey(const uint8_t* buffer, size_t length) {
+  assert(buffer != NULL);
+  uint8_t* pkcs8_rsa_key = const_cast<uint8_t*>(buffer);
+  BIO* bio = BIO_new_mem_buf(pkcs8_rsa_key, length);
+  if (bio == NULL) {
+    LOGE("[LoadPkcs8RsaKey(): Could not allocate bio buffer]");
+    return false;
+  }
+  bool success = true;
+  PKCS8_PRIV_KEY_INFO* pkcs8_pki = d2i_PKCS8_PRIV_KEY_INFO_bio(bio, NULL);
+  if (pkcs8_pki == NULL) {
+    LOGE("[LoadPkcs8RsaKey(): d2i_PKCS8_PRIV_KEY_INFO_bio returned NULL]");
+    success = false;
+  }
+  EVP_PKEY* evp = NULL;
+  if (success) {
+    evp = EVP_PKCS82PKEY(pkcs8_pki);
+    if (evp == NULL) {
+      LOGE("[LoadPkcs8RsaKey(): EVP_PKCS82PKEY returned NULL]");
+      success = false;
+    }
+  }
+  if (success) {
+    rsa_key_ = EVP_PKEY_get1_RSA(evp);
+    if (rsa_key_ == NULL) {
+      LOGE("[LoadPkcs8RsaKey(): PrivateKeyInfo did not contain an RSA key]");
+      success = false;
+    }
+  }
+  if (evp != NULL) {
+    EVP_PKEY_free(evp);
+  }
+  if (pkcs8_pki != NULL) {
+    PKCS8_PRIV_KEY_INFO_free(pkcs8_pki);
+  }
+  BIO_free(bio);
+  if (!success) {
+    return false;
+  }
+  switch (RSA_check_key(rsa_key_)) {
+    case 1:  // valid.
+      return true;
+    case 0:  // not valid.
+      LOGE("[LoadPkcs8RsaKey(): rsa key not valid]");
+      dump_openssl_error();
+      return false;
+    default:  // -1 == check failed.
+      LOGE("[LoadPkcs8RsaKey(): error checking rsa key]");
+      dump_openssl_error();
+      return false;
+  }
+}
+
 // Internal utility function to decrypt the message
 bool SessionContext::DecryptMessage(const std::vector<uint8_t>& key,
                                     const std::vector<uint8_t>& iv,
@@ -1279,18 +1309,19 @@ bool SessionContext::DecryptMessage(const std::vector<uint8_t>& key,
   memcpy(iv_buffer, &iv[0], 16);
   AES_KEY aes_key;
   AES_set_decrypt_key(&key[0], 128, &aes_key);
-  AES_cbc_encrypt(&message[0], &(decrypted->front()), message.size(),
-                  &aes_key, iv_buffer, AES_DECRYPT);
+  AES_cbc_encrypt(&message[0], &(decrypted->front()), message.size(), &aes_key,
+                  iv_buffer, AES_DECRYPT);
   return true;
 }
 
-OEMCryptoResult SessionContext::DecryptCTR(
-    const uint8_t* iv, size_t block_offset, const uint8_t* cipher_data,
+OEMCryptoResult SessionContext::DecryptCENC(
+    const uint8_t* iv, size_t block_offset,
+    const OEMCrypto_CENCEncryptPatternDesc* pattern, const uint8_t* cipher_data,
     size_t cipher_data_length, bool is_encrypted, uint8_t* clear_data,
     OEMCryptoBufferType buffer_type) {
   // If the data is clear, we do not need a current key selected.
   if (!is_encrypted) {
-    if (buffer_type != OEMCrypto_BufferType_Direct){
+    if (buffer_type != OEMCrypto_BufferType_Direct) {
       memcpy(reinterpret_cast<uint8_t*>(clear_data), cipher_data,
              cipher_data_length);
       return OEMCrypto_SUCCESS;
@@ -1356,9 +1387,107 @@ OEMCryptoResult SessionContext::DecryptCTR(
     return OEMCrypto_SUCCESS;
   }
 
+  if (!current_content_key()->ctr_mode()) {
+    if (block_offset > 0) return OEMCrypto_ERROR_INVALID_CONTEXT;
+    return DecryptCBC(key_u8, iv, pattern, cipher_data, cipher_data_length,
+                      clear_data);
+  }
+  if (pattern->skip > 0) {
+    return PatternDecryptCTR(key_u8, iv, block_offset, pattern, cipher_data,
+                             cipher_data_length, clear_data);
+  }
+  return DecryptCTR(key_u8, iv, block_offset, cipher_data, cipher_data_length,
+                    clear_data);
+}
+
+OEMCryptoResult SessionContext::DecryptCBC(
+    const uint8_t* key, const uint8_t* initial_iv,
+    const OEMCrypto_CENCEncryptPatternDesc* pattern, const uint8_t* cipher_data,
+    size_t cipher_data_length, uint8_t* clear_data) {
+  AES_KEY aes_key;
+  AES_set_decrypt_key(&key[0], AES_BLOCK_SIZE * 8, &aes_key);
+  uint8_t iv[AES_BLOCK_SIZE];
+  memcpy(iv, &initial_iv[0], AES_BLOCK_SIZE);
+
+  size_t l = 0;
+  size_t pattern_offset = pattern->offset;
+  while (l < cipher_data_length) {
+    size_t size =
+        std::min(cipher_data_length - l, static_cast<size_t>(AES_BLOCK_SIZE));
+    size_t pattern_length = pattern->encrypt + pattern->skip;
+    bool skip_block = (pattern_offset >= pattern->encrypt)
+        && (pattern_length>0);
+    if (pattern_length > 0) {
+      pattern_offset = (pattern_offset + 1) % pattern_length;
+    }
+    if (skip_block || (size < AES_BLOCK_SIZE)) {
+      memcpy(&clear_data[l], &cipher_data[l], size);
+    } else {
+      uint8_t aes_output[AES_BLOCK_SIZE];
+      AES_decrypt(&cipher_data[l], aes_output, &aes_key);
+      for (size_t n = 0; n < AES_BLOCK_SIZE; n++) {
+        clear_data[l + n] = aes_output[n] ^ iv[n];
+      }
+      memcpy(iv, &cipher_data[l], AES_BLOCK_SIZE);
+    }
+    l += size;
+  }
+  return OEMCrypto_SUCCESS;
+}
+
+OEMCryptoResult SessionContext::PatternDecryptCTR(
+    const uint8_t* key, const uint8_t* initial_iv, size_t block_offset,
+    const OEMCrypto_CENCEncryptPatternDesc* pattern, const uint8_t* cipher_data,
+    size_t cipher_data_length, uint8_t* clear_data) {
+  AES_KEY aes_key;
+  AES_set_encrypt_key(&key[0], AES_BLOCK_SIZE * 8, &aes_key);
+  uint8_t iv[AES_BLOCK_SIZE];
+  memcpy(iv, &initial_iv[0], AES_BLOCK_SIZE);
+
+  size_t l = 0;
+  size_t pattern_offset = pattern->offset;
+  while (l < cipher_data_length) {
+    size_t size =
+        std::min(cipher_data_length - l, AES_BLOCK_SIZE - block_offset);
+    size_t pattern_length = pattern->encrypt + pattern->skip;
+    bool skip_block = (pattern_offset >= pattern->encrypt)
+        && (pattern_length>0);
+    if (pattern_length > 0) {
+      pattern_offset = (pattern_offset + 1) % pattern_length;
+    }
+    if (skip_block) {
+      memcpy(&clear_data[l], &cipher_data[l], size);
+    } else {
+      uint8_t aes_output[AES_BLOCK_SIZE];
+      AES_encrypt(iv, aes_output, &aes_key);
+      for (size_t n = 0; n < size; n++) {
+        clear_data[l + n] = aes_output[n + block_offset] ^ cipher_data[l + n];
+      }
+      ctr128_inc64(iv);
+    }
+    l += size;
+    block_offset = 0;
+  }
+  return OEMCrypto_SUCCESS;
+}
+
+// This is a special case of PatternDecryptCTR with no skip pattern. It uses
+// more optimized versions of openssl's implementation of AES CTR mode.
+OEMCryptoResult SessionContext::DecryptCTR(const uint8_t* key_u8,
+                                           const uint8_t* iv,
+                                           size_t block_offset,
+                                           const uint8_t* cipher_data,
+                                           size_t cipher_data_length,
+                                           uint8_t* clear_data) {
   // Local copy (will be modified).
-  uint8_t aes_iv[AES_BLOCK_SIZE];
-  memcpy(aes_iv, &iv[0], AES_BLOCK_SIZE);
+  // Allocated as 64-bit ints to enforce 64-bit alignment for later access as a
+  // 64-bit value.
+  uint64_t aes_iv[2];
+  assert(sizeof(aes_iv) == AES_BLOCK_SIZE);
+  // The double-cast is needed to comply with strict aliasing rules.
+  uint8_t* aes_iv_u8 =
+      reinterpret_cast<uint8_t*>(reinterpret_cast<void*>(aes_iv));
+  memcpy(aes_iv_u8, &iv[0], AES_BLOCK_SIZE);
 
   // The CENC spec specifies we increment only the low 64 bits of the IV
   // counter, and leave the high 64 bits alone.  This is different from the
@@ -1366,7 +1495,6 @@ OEMCryptoResult SessionContext::DecryptCTR(
   // why we implement the CTR loop ourselves.
   size_t l = 0;
   if (block_offset > 0 && l < cipher_data_length) {
-
     // Encrypt the IV.
     uint8_t ecount_buf[AES_BLOCK_SIZE];
 
@@ -1375,12 +1503,12 @@ OEMCryptoResult SessionContext::DecryptCTR(
       LOGE("[DecryptCTR(): FAILURE]");
       return OEMCrypto_ERROR_DECRYPT_FAILED;
     }
-    AES_encrypt(aes_iv, ecount_buf, &aes_key);
+    AES_encrypt(aes_iv_u8, ecount_buf, &aes_key);
     for (int n = block_offset; n < AES_BLOCK_SIZE && l < cipher_data_length;
-        ++n, ++l) {
+         ++n, ++l) {
       clear_data[l] = cipher_data[l] ^ ecount_buf[n];
     }
-    ctr128_inc64(aes_iv);
+    ctr128_inc64(aes_iv_u8);
     block_offset = 0;
   }
 
@@ -1391,7 +1519,7 @@ OEMCryptoResult SessionContext::DecryptCTR(
     EVP_CIPHER_CTX ctx;
     EVP_CIPHER_CTX_init(&ctx);
     EVP_CIPHER_CTX_set_padding(&ctx, 0);
-    if (!EVP_DecryptInit_ex(&ctx, EVP_aes_128_ctr(), NULL, key_u8, aes_iv)) {
+    if (!EVP_DecryptInit_ex(&ctx, EVP_aes_128_ctr(), NULL, key_u8, aes_iv_u8)) {
       LOGE("[DecryptCTR(): EVP_INIT ERROR]");
       return OEMCrypto_ERROR_DECRYPT_FAILED;
     }
@@ -1400,9 +1528,9 @@ OEMCryptoResult SessionContext::DecryptCTR(
     // value is 0xFF the counter is near wrapping. In this case we calculate
     // the number of bytes we can safely decrypt before the counter wraps.
     uint64_t decrypt_length = 0;
-    if (aes_iv[8] == 0xFF) {
-      uint64_t bytes_before_iv_wrap = (~wvcdm::ntohll64(
-          *reinterpret_cast<uint64_t*>(&aes_iv[8])) + 1) * AES_BLOCK_SIZE;
+    if (aes_iv_u8[8] == 0xFF) {
+      uint64_t bottom_64_bits = wvcdm::ntohll64(aes_iv[1]);
+      uint64_t bytes_before_iv_wrap = (~bottom_64_bits + 1) * AES_BLOCK_SIZE;
       decrypt_length =
           bytes_before_iv_wrap < remaining ? bytes_before_iv_wrap : remaining;
     } else {
@@ -1418,8 +1546,8 @@ OEMCryptoResult SessionContext::DecryptCTR(
     remaining = cipher_data_length - l;
 
     int final;
-    if (!EVP_DecryptFinal_ex(&ctx, &clear_data[cipher_data_length - remaining],
-                             &final)) {
+    if (!EVP_DecryptFinal_ex(
+            &ctx, &clear_data[cipher_data_length - remaining], & final)) {
       LOGE("[DecryptCTR(): EVP_FINAL_ERROR]");
       return OEMCrypto_ERROR_DECRYPT_FAILED;
     }
@@ -1427,8 +1555,8 @@ OEMCryptoResult SessionContext::DecryptCTR(
 
     // If remaining is not zero, reset the iv before the second pass.
     if (remaining) {
-      memcpy(aes_iv, &iv[0], AES_BLOCK_SIZE);
-      memset(&aes_iv[8], 0, AES_BLOCK_SIZE / 2);
+      memcpy(aes_iv_u8, &iv[0], AES_BLOCK_SIZE);
+      memset(&aes_iv_u8[8], 0, AES_BLOCK_SIZE / 2);
     }
   }
 

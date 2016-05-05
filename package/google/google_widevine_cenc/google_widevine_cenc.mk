@@ -9,14 +9,21 @@ GOOGLE_WIDEVINE_CENC_DEPENDENCIES = protobuf \
 				    openssl
 
 define GOOGLE_WIDEVINE_CENC_BUILD_CMDS
-	export PATH=$(TARGET_PATH):$$PATH ; \
+	export PATH=$(TARGET_PATH):$$PATH; \
 	export PROTOC=$$(dirname $$(which protoc)); \
 	export CGO_ENABLED=1; \
+	export V=1; \
+	export BUILDTYPE=Release; \
 	pushd "$(@D)"; \
 	mkdir -p platforms/spacecast; \
 	cp "$(WV_DIR)"/spacecast_cdm_config.gypi platforms/spacecast; \
 	cp -r "$(WV_DIR)"/oemcrypto platforms/spacecast; \
-	gyp --depth=. cdm/cdm.gyp -I platforms/spacecast/spacecast_cdm_config.gypi \
+	cp "$(WV_DIR)"/spacecast_cdm.gyp platforms/spacecast; \
+	cp -r "$(WV_DIR)"/include platforms/spacecast; \
+	cp -r "$(WV_DIR)"/src platforms/spacecast; \
+	cp -r "$(WV_DIR)"/gowvcdm_linux_arm.go wrappers/go/src/gowvcdm; \
+	mkdir -p "$(@D)"/wrappers/go/src/video_widevine_server_sdk; \
+	gyp --depth=. platforms/spacecast/spacecast_cdm.gyp -Iplatforms/spacecast/spacecast_cdm_config.gypi \
 	-Dprotoc_dir=$$PROTOC; \
 	make -e CC="$(TARGET_CC)" -e CXX="$(TARGET_CXX)"; \
 	popd
@@ -33,11 +40,11 @@ endef
 GOOGLE_WIDEVINE_CENC_POST_PATCH_HOOKS += GOOGLE_WIDEVINE_CENC_FIX_PATH
 
 define GOOGLE_WIDEVINE_CENC_INSTALL_STAGING_CMDS
-	$(INSTALL) -D "$(@D)/out/Debug/libwvcdm_static.a" "$(STAGING_DIR)/usr/lib/libwvcdm_static.a"
-	$(INSTALL) -D "$(@D)/out/Debug/libwvcdm_sysdep.a" "$(STAGING_DIR)/usr/lib/libwvcdm_sysdep.a"
-	$(INSTALL) -D "$(@D)/out/Debug/libdevice_files.a" "$(STAGING_DIR)/usr/lib/libdevice_files.a"
-	$(INSTALL) -D "$(@D)/out/Debug/liboec_mock.a" "$(STAGING_DIR)/usr/lib/liboec_mock.a"
-	$(INSTALL) -D "$(@D)/out/Debug/liblicense_protocol.a" "$(STAGING_DIR)/usr/lib/liblicense_protocol.a"
+	$(INSTALL) -D "$(@D)/out/Release/libwidevine_cdm_core.a" "$(STAGING_DIR)/usr/lib/libwidevine_cdm_core.a"
+	$(INSTALL) -D "$(@D)/out/Release/libwidevine_ce_cdm_static.a" "$(STAGING_DIR)/usr/lib/libwidevine_ce_cdm_static.a"
+	$(INSTALL) -D "$(@D)/out/Release/libdevice_files.a" "$(STAGING_DIR)/usr/lib/libdevice_files.a"
+	$(INSTALL) -D "$(@D)/out/Release/liboec_mock.a" "$(STAGING_DIR)/usr/lib/liboec_mock.a"
+	$(INSTALL) -D "$(@D)/out/Release/liblicense_protocol.a" "$(STAGING_DIR)/usr/lib/liblicense_protocol.a"
 endef
 
 $(eval $(call GENTARGETS))

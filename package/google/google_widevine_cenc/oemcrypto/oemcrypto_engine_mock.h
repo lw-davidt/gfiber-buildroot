@@ -12,10 +12,10 @@
 
 #include <openssl/rsa.h>
 
+#include "OEMCryptoCENC.h"  // Needed for enums only.
 #include "lock.h"
 #include "oemcrypto_key_mock.h"
 #include "oemcrypto_keybox_mock.h"
-#include "OEMCryptoCENC.h"  // Needed for enum OEMCrypto_Algorithm.
 #include "wv_cdm_types.h"
 
 #ifndef MAX_NUMBER_OF_OEMCRYPTO_SESSIONS
@@ -62,7 +62,6 @@ class SessionKeyTable {
 
 class NonceTable {
  public:
-  // Table size id per crypto session.
   static const int kTableSize = NONCE_TABLE_SIZE;
   NonceTable() {
     for (int i = 0; i < kTableSize; ++i) {
@@ -107,16 +106,19 @@ class SessionContext {
   bool GenerateSignature(const uint8_t* message, size_t message_length,
                          uint8_t* signature, size_t* signature_length);
   size_t RSASignatureSize();
-  bool GenerateRSASignature(const uint8_t* message, size_t message_length,
-                            uint8_t* signature, size_t* signature_length,
-                            RSA_Padding_Scheme padding_scheme);
+  OEMCryptoResult GenerateRSASignature(const uint8_t* message,
+                                       size_t message_length,
+                                       uint8_t* signature,
+                                       size_t* signature_length,
+                                       RSA_Padding_Scheme padding_scheme);
   bool ValidateMessage(const uint8_t* message, size_t message_length,
                        const uint8_t* signature, size_t signature_length);
-  OEMCryptoResult DecryptCTR(const uint8_t* iv, size_t block_offset,
-                             const uint8_t* cipher_data,
-                             size_t cipher_data_length, bool is_encrypted,
-                             uint8_t* clear_data,
-                             OEMCryptoBufferType buffer_type);
+  OEMCryptoResult DecryptCENC(const uint8_t* iv, size_t block_offset,
+                              const OEMCrypto_CENCEncryptPatternDesc* pattern,
+                              const uint8_t* cipher_data,
+                              size_t cipher_data_length, bool is_encrypted,
+                              uint8_t* clear_data,
+                              OEMCryptoBufferType buffer_type);
 
   OEMCryptoResult Generic_Encrypt(const uint8_t* in_buffer,
                                   size_t buffer_length, const uint8_t* iv,
@@ -145,7 +147,7 @@ class SessionContext {
                   const std::vector<uint8_t>& key_data_iv,
                   const std::vector<uint8_t>& key_control,
                   const std::vector<uint8_t>& key_control_iv,
-                  const std::vector<uint8_t>& pst);
+                  const std::vector<uint8_t>& pst, bool ctr_mode);
   bool DecryptRSAKey(const uint8_t* enc_rsa_key, size_t enc_rsa_key_length,
                      const uint8_t* wrapped_rsa_key_iv, uint8_t* pkcs8_rsa_key);
   bool EncryptRSAKey(const uint8_t* pkcs8_rsa_key, size_t enc_rsa_key_length,
@@ -153,8 +155,9 @@ class SessionContext {
   bool LoadRSAKey(uint8_t* pkcs8_rsa_key, size_t rsa_key_length,
                   const uint8_t* message, size_t message_length,
                   const uint8_t* signature, size_t signature_length);
-  bool RefreshKey(const KeyId& key_id, const std::vector<uint8_t>& key_control,
-                  const std::vector<uint8_t>& key_control_iv);
+  OEMCryptoResult RefreshKey(const KeyId& key_id,
+                             const std::vector<uint8_t>& key_control,
+                             const std::vector<uint8_t>& key_control_iv);
   bool UpdateMacKeys(const std::vector<uint8_t>& mac_keys,
                      const std::vector<uint8_t>& iv);
   bool QueryKeyControlBlock(const KeyId& key_id, uint32_t* data);
@@ -191,6 +194,18 @@ class SessionContext {
   bool CheckNonceOrEntry(const KeyControlBlock& key_control_block,
                          const std::vector<uint8_t>& pst);
   bool IsUsageEntryValid();
+  OEMCryptoResult DecryptCBC(const uint8_t* key, const uint8_t* iv,
+                             const OEMCrypto_CENCEncryptPatternDesc* pattern,
+                             const uint8_t* cipher_data,
+                             size_t cipher_data_length, uint8_t* clear_data);
+  OEMCryptoResult PatternDecryptCTR(
+      const uint8_t* key, const uint8_t* iv, size_t block_offset,
+      const OEMCrypto_CENCEncryptPatternDesc* pattern,
+      const uint8_t* cipher_data, size_t cipher_data_length,
+      uint8_t* clear_data);
+  OEMCryptoResult DecryptCTR(const uint8_t* key_u8, const uint8_t* iv,
+                             size_t block_offset, const uint8_t* cipher_data,
+                             size_t cipher_data_length, uint8_t* clear_data);
 
   bool valid_;
   CryptoEngine* ce_;
@@ -255,15 +270,18 @@ class CryptoEngine {
   bool supports_keybox();
   bool is_anti_rollback_hw_present();
   const char* security_level();
+  uint8_t security_patch_level();
 
  private:
+  bool LoadPkcs8RsaKey(const uint8_t* buffer, size_t length);
+
   SessionContext* current_session_;
   ActiveSessions sessions_;
   WvKeybox keybox_;
   WvTestKeybox test_keybox_;
+  bool use_test_keybox_;
   wvcdm::Lock session_table_lock_;
   UsageTable* usage_table_;
-  bool use_test_keybox_;
   RSA* rsa_key_;  // If no keybox, this is baked in certificate.
 
   CORE_DISALLOW_COPY_AND_ASSIGN(CryptoEngine);
