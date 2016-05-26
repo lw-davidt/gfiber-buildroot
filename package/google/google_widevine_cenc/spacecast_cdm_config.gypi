@@ -10,7 +10,7 @@
     'device_name': '"Spacecastgfsc100"',
     'product_name': '"Spacecastgfsc100"',
     'buildinfo_data': '"UndefinedBuildInfo"',
-    'oemcrypto_version': 10,
+    'oemcrypto_version': 11,
     'oemcrypto_target': '<(DEPTH)/platforms/spacecast/oemcrypto/oemcrypto.gyp:oec_mock',
     'oemcrypto_max_sessions': '500',
     'oemcrypto_nonce_flood_threshold': '300',
@@ -20,27 +20,32 @@
 
     # There are three protobuf configurations:
     #
-    # 1) protobuf_lib_type == 'system'
+    # 1) protobuf_config == 'system'
     # Use a system-wide installation of protobuf.
     # Specify the protobuf library in protobuf_lib.
-    # Specify the path to protoc in protoc_dir.
+    # Specify the path to protoc in protoc_bin.
     #
-    # 2) protobuf_lib_type == 'target'
+    # 2) protobuf_config == 'target'
     # Use an existing protobuf gyp target from your project.
-    # Specify the protobuf gyp file and target in protobuf_lib.
-    # Specify the path to protoc in protoc_dir.
+    # Specify the protobuf gyp file and target in protobuf_lib_target.
+    # Specify the protoc gyp file and target in protoc_host_target.
+    # Specify the path to protoc in protoc_bin.
     #
-    # 3) protobuf_lib_type == 'source'
+    # 3) protobuf_config == 'source'  (default)
     # Build protobuf and protoc from source.
-    # Specify the path to the protobuf source in protobuf_lib.
     # Make sure that a valid config.h for your target is in the source tree.
-    'protobuf_lib_type%': 'system',
-    'protobuf_lib%': '-lprotobuf',
-    #'protoc_dir%': 'usr/bin/protoc',
+    'protobuf_config': 'system',
+    'protobuf_lib': '-lprotobuf',
+    'protoc_bin': '<(protoc_dir)/protoc',
   }, # end variables
 
   'target_defaults': {
     'cflags': ['-fPIC'],
+    # These are flags passed to the compiler for C++ only.
+    'cflags_cc': [
+      '-std=c++11',
+    ],
+    'include_dirs': ['include'],
     'configurations': {
       'Debug': {
         'defines': [
@@ -56,6 +61,10 @@
     'target_conditions': [
       ['_type=="static_library"', {
         'standalone_static_library': 1,
+      }],
+      ['_target_name=="widevine_ce_cdm_static"', {
+        'sources/': [['exclude', 'cdm.cpp']],
+        'sources': ['src/spacecast_api.cpp'],
       }],
     ], # end target_conditions
     'defines': [

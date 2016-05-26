@@ -4,23 +4,29 @@
 //
 #include "OEMCryptoCENC.h"
 
+#include <openssl/cmac.h>
+#include <openssl/evp.h>
+#include <openssl/hmac.h>
+#include <openssl/rand.h>
+#include <openssl/sha.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
 #include <iostream>
 #include <string>
 #include <vector>
-#include <openssl/cmac.h>
-#include <openssl/evp.h>
-#include <openssl/hmac.h>
-#include <openssl/rand.h>
-#include <openssl/sha.h>
 #include "log.h"
 #include "oemcrypto_engine_mock.h"
 #include "oemcrypto_logging.h"
 #include "oemcrypto_usage_table_mock.h"
 #include "string_conversions.h"
 #include "wv_cdm_constants.h"
+
+namespace {
+const uint8_t kBakedInCertificateMagicBytes[] = { 0xDE, 0xAD, 0xBE, 0xEF };
+}  // namespace
 
 namespace wvoec_mock {
 
@@ -80,6 +86,10 @@ OEMCryptoResult OEMCrypto_OpenSession(OEMCrypto_SESSION* session) {
     LOGI("-- OEMCryptoResult OEMCrypto_OpenSession"
          "(OEMCrypto_SESSION *session)\n");
   }
+  if (!crypto_engine) {
+    LOGE("OEMCrypto_OpenSession: OEMCrypto Not Initialized.");
+    return OEMCrypto_ERROR_UNKNOWN_FAILURE;
+  }
   if (crypto_engine->GetNumberOfOpenSessions() >=
       crypto_engine->GetMaxNumberOfSessions()) {
     LOGE("[OEMCrypto_OpenSession(): failed due to too many sessions]");
@@ -98,6 +108,10 @@ OEMCryptoResult OEMCrypto_CloseSession(OEMCrypto_SESSION session) {
   if (LogCategoryEnabled(kLoggingTraceOEMCryptoCalls)) {
     LOGI("-- OEMCryptoResult OEMCrypto_CloseSession"
          "(OEMCrypto_SESSION session)\n");
+  }
+  if (!crypto_engine) {
+    LOGE("OEMCrypto_CloseSession: OEMCrypto Not Initialized.");
+    return OEMCrypto_ERROR_UNKNOWN_FAILURE;
   }
   if (!crypto_engine->DestroySession((SessionId)session)) {
     if (LogCategoryEnabled(kLoggingTraceOEMCryptoCalls)) {
@@ -126,6 +140,10 @@ OEMCryptoResult OEMCrypto_GenerateDerivedKeys(OEMCrypto_SESSION session,
       dump_hex("enc_key_context", enc_key_context,
                (size_t)enc_key_context_length);
     }
+  }
+  if (!crypto_engine) {
+    LOGE("OEMCrypto_GenerateDerivedKeys: OEMCrypto Not Initialized.");
+    return OEMCrypto_ERROR_UNKNOWN_FAILURE;
   }
   if (!crypto_engine->supports_keybox()) {
     return OEMCrypto_ERROR_NOT_IMPLEMENTED;
@@ -171,6 +189,10 @@ OEMCryptoResult OEMCrypto_GenerateNonce(OEMCrypto_SESSION session,
     LOGI("-- OEMCryptoResult OEMCrypto_GenerateNonce"
          "(OEMCrypto_SESSION session,\n");
   }
+  if (!crypto_engine) {
+    LOGE("OEMCrypto_GenerateNonce: OEMCrypto Not Initialized.");
+    return OEMCrypto_ERROR_UNKNOWN_FAILURE;
+  }
   SessionContext* session_ctx = crypto_engine->FindSession(session);
   if (!session_ctx || !session_ctx->isValid()) {
     LOGE("[OEMCrypto_GenerateNonce(): ERROR_INVALID_SESSION]");
@@ -183,7 +205,6 @@ OEMCryptoResult OEMCrypto_GenerateNonce(OEMCrypto_SESSION session,
   time_t now = time(NULL);
   if (now == last_nonce_time) {
     nonce_count++;
-    // Limit the number of nonces that canned be created per second.
     if (nonce_count > MAX_NONCE_PER_SECOND) {
       LOGE("[OEMCrypto_GenerateNonce(): Nonce Flood detected]");
       return OEMCrypto_ERROR_UNKNOWN_FAILURE;
@@ -221,6 +242,10 @@ OEMCryptoResult OEMCrypto_GenerateSignature(
     if (wvcdm::g_cutoff >= wvcdm::LOG_VERBOSE) {
       dump_hex("message", message, message_length);
     }
+  }
+  if (!crypto_engine) {
+    LOGE("OEMCrypto_GenerateSignature: OEMCrypto Not Initialized.");
+    return OEMCrypto_ERROR_UNKNOWN_FAILURE;
   }
 
   if (*signature_length < SHA256_DIGEST_LENGTH) {
@@ -277,6 +302,10 @@ OEMCryptoResult OEMCrypto_LoadKeys(OEMCrypto_SESSION session,
                                    const OEMCrypto_KeyObject* key_array,
                                    const uint8_t* pst,
                                    size_t pst_length) {
+  if (!crypto_engine) {
+    LOGE("OEMCrypto_LoadKeys: OEMCrypto Not Initialized.");
+    return OEMCrypto_ERROR_UNKNOWN_FAILURE;
+  }
   if (LogCategoryEnabled(kLoggingTraceOEMCryptoCalls)) {
     LOGI("-- OEMCryptoResult OEMCrypto_LoadKeys(OEMCrypto_SESSION session,\n");
     if (wvcdm::g_cutoff >= wvcdm::LOG_VERBOSE) {
@@ -298,6 +327,8 @@ OEMCryptoResult OEMCrypto_LoadKeys(OEMCrypto_SESSION session,
                         key_array[i].key_control_iv, wvcdm::KEY_IV_SIZE);
         dump_array_part("key_array", i, "key_control",
                         key_array[i].key_control, wvcdm::KEY_IV_SIZE);
+        LOGV("key_array[%zu].cipher_mode=%s;\n", i,
+             key_array[i].cipher_mode == OEMCrypto_CipherMode_CTR ? "CTR" : "CBC");
       }
     }
   }
@@ -352,7 +383,6 @@ OEMCryptoResult OEMCrypto_LoadKeys(OEMCrypto_SESSION session,
       return OEMCrypto_ERROR_INVALID_CONTEXT;
     }
   }
-
   return session_ctx->LoadKeys(message, message_length, signature,
                                signature_length, enc_mac_key_iv, enc_mac_keys,
                                num_keys, key_array, pst, pst_length);
@@ -370,6 +400,10 @@ OEMCryptoResult OEMCrypto_RefreshKeys(
   if (LogCategoryEnabled(kLoggingTraceOEMCryptoCalls)) {
     LOGI("-- OEMCryptoResult OEMCrypto_RefreshKeys(num_keys=%zu)\n",
            num_keys);
+  }
+  if (!crypto_engine) {
+    LOGE("OEMCrypto_RefreshKeys: OEMCrypto Not Initialized.");
+    return OEMCrypto_ERROR_UNKNOWN_FAILURE;
   }
 
   if (NO_ERROR != crypto_engine->ValidateKeybox()) {
@@ -411,7 +445,7 @@ OEMCryptoResult OEMCrypto_RefreshKeys(
   }
 
   // Decrypt and refresh keys in key refresh object
-  bool status = true;
+  OEMCryptoResult status = OEMCrypto_SUCCESS;
   std::vector<uint8_t> key_id;
   std::vector<uint8_t> key_control;
   std::vector<uint8_t> key_control_iv;
@@ -436,15 +470,17 @@ OEMCryptoResult OEMCrypto_RefreshKeys(
                          key_array[i].key_control + wvcdm::KEY_CONTROL_SIZE);
     }
 
-    if (!session_ctx->RefreshKey(key_id, key_control, key_control_iv)) {
-      LOGE("[OEMCrypto_RefreshKeys():  error in key %i]", i);
-      status = false;
+    status = session_ctx->RefreshKey(key_id, key_control, key_control_iv);
+    if (status != OEMCrypto_SUCCESS) {
+      LOGE("[OEMCrypto_RefreshKeys():  error %u in key %i]", status, i);
       break;
     }
   }
 
   session_ctx->FlushNonces();
-  if (!status) return OEMCrypto_ERROR_UNKNOWN_FAILURE;
+  if (status != OEMCrypto_SUCCESS) {
+    return status;
+  }
 
   session_ctx->StartTimer();
   return OEMCrypto_SUCCESS;
@@ -459,6 +495,10 @@ extern "C" OEMCryptoResult OEMCrypto_QueryKeyControl(
     if (wvcdm::g_cutoff >= wvcdm::LOG_VERBOSE) {
       dump_hex("key_id", key_id, key_id_length);
     }
+  }
+  if (!crypto_engine) {
+    LOGE("OEMCrypto_QueryKeyControl: OEMCrypto Not Initialized.");
+    return OEMCrypto_ERROR_UNKNOWN_FAILURE;
   }
   uint32_t* block = reinterpret_cast<uint32_t*>(key_control_block);
   if ((key_control_block_length == NULL)
@@ -557,17 +597,22 @@ OEMCryptoResult SetDestination(OEMCrypto_DestBufferDesc* out_buffer,
 }
 
 extern "C"
-OEMCryptoResult OEMCrypto_DecryptCTR(OEMCrypto_SESSION session,
-                                     const uint8_t* data_addr,
-                                     size_t data_length,
-                                     bool is_encrypted,
-                                     const uint8_t* iv,
-                                     size_t block_offset,
-                                     OEMCrypto_DestBufferDesc* out_buffer,
-                                     uint8_t subsample_flags) {
+OEMCryptoResult OEMCrypto_DecryptCENC(OEMCrypto_SESSION session,
+                                      const uint8_t* data_addr,
+                                      size_t data_length,
+                                      bool is_encrypted,
+                                      const uint8_t* iv,
+                                      size_t block_offset,
+                                      OEMCrypto_DestBufferDesc* out_buffer,
+                                      const OEMCrypto_CENCEncryptPatternDesc* pattern,
+                                      uint8_t subsample_flags) {
   if (LogCategoryEnabled(kLoggingTraceOEMCryptoCalls)) {
     LOGI("-- OEMCryptoResult OEMCrypto_DecryptCTR"
          "(OEMCrypto_SESSION session,\n");
+  }
+  if (!crypto_engine) {
+    LOGE("OEMCrypto_DecryptCTR: OEMCrypto Not Initialized.");
+    return OEMCrypto_ERROR_UNKNOWN_FAILURE;
   }
   if (data_addr == NULL || data_length == 0 ||
       iv == NULL || out_buffer == NULL) {
@@ -593,9 +638,10 @@ OEMCryptoResult OEMCrypto_DecryptCTR(OEMCrypto_SESSION session,
     return OEMCrypto_ERROR_INVALID_SESSION;
   }
 
-  return session_ctx->DecryptCTR(iv, block_offset, data_addr, data_length,
-                                 is_encrypted, destination,
-                                 out_buffer->type);
+  return session_ctx->DecryptCENC(iv, block_offset, pattern,
+                                  data_addr, data_length,
+                                  is_encrypted, destination,
+                                  out_buffer->type);
 }
 
 extern "C"
@@ -605,6 +651,10 @@ OEMCryptoResult OEMCrypto_CopyBuffer(const uint8_t *data_addr,
                                   uint8_t subsample_flags) {
   if (LogCategoryEnabled(kLoggingTraceOEMCryptoCalls)) {
     LOGI("-- OEMCryptoResult OEMCrypto_CopyBuffer(..)\n");
+  }
+  if (!crypto_engine) {
+    LOGE("OEMCrypto_CopyBuffer: OEMCrypto Not Initialized.");
+    return OEMCrypto_ERROR_UNKNOWN_FAILURE;
   }
   if (data_addr == NULL || out_buffer == NULL) {
     LOGE("[OEMCrypto_CopyBuffer(): OEMCrypto_ERROR_INVALID_CONTEXT]");
@@ -649,6 +699,10 @@ OEMCryptoResult OEMCrypto_InstallKeybox(const uint8_t* keybox,
   if (LogCategoryEnabled(kLoggingTraceOEMCryptoCalls)) {
     LOGI("-- OEMCryptoResult OEMCrypto_InstallKeybox(const uint8_t *keybox,\n");
   }
+  if (!crypto_engine) {
+    LOGE("OEMCrypto_InstallKeybox: OEMCrypto Not Initialized.");
+    return OEMCrypto_ERROR_UNKNOWN_FAILURE;
+  }
   if (!crypto_engine->supports_keybox()) {
     return OEMCrypto_ERROR_NOT_IMPLEMENTED;
   }
@@ -663,6 +717,10 @@ OEMCryptoResult OEMCrypto_LoadTestKeybox() {
   if (LogCategoryEnabled(kLoggingTraceOEMCryptoCalls)) {
     LOGI("-- OEMCryptoResult OEMCrypto_LoadTestKeybox()\n");
   }
+  if (!crypto_engine) {
+    LOGE("OEMCrypto_LoadTestKeybox: OEMCrypto Not Initialized.");
+    return OEMCrypto_ERROR_UNKNOWN_FAILURE;
+  }
   if (!crypto_engine->supports_keybox()) {
     return OEMCrypto_ERROR_NOT_IMPLEMENTED;
   }
@@ -674,6 +732,10 @@ extern "C"
 OEMCryptoResult OEMCrypto_IsKeyboxValid(void) {
   if (LogCategoryEnabled(kLoggingTraceOEMCryptoCalls)) {
     LOGI("-- OEMCryptoResult OEMCrypto_IsKeyboxValid(void) {\n");
+  }
+  if (!crypto_engine) {
+    LOGE("OEMCrypto_IsKeyboxValid: OEMCrypto Not Initialized.");
+    return OEMCrypto_ERROR_UNKNOWN_FAILURE;
   }
   if (!crypto_engine->supports_keybox()) {
     return OEMCrypto_ERROR_NOT_IMPLEMENTED;
@@ -692,6 +754,10 @@ OEMCryptoResult OEMCrypto_GetDeviceID(uint8_t* deviceID,
                                       size_t* idLength) {
   if (LogCategoryEnabled(kLoggingTraceOEMCryptoCalls)) {
     LOGI("-- OEMCryptoResult OEMCrypto_GetDeviceID(uint8_t* deviceID,\n");
+  }
+  if (!crypto_engine) {
+    LOGE("OEMCrypto_GetDeviceID: OEMCrypto Not Initialized.");
+    return OEMCrypto_ERROR_UNKNOWN_FAILURE;
   }
   // Devices that do not support a keybox should use some other method to
   // store the device id.
@@ -721,6 +787,10 @@ OEMCryptoResult OEMCrypto_GetKeyData(uint8_t* keyData,
                                      size_t* keyDataLength) {
   if (LogCategoryEnabled(kLoggingTraceOEMCryptoCalls)) {
     LOGI("-- OEMCryptoResult OEMCrypto_GetKeyData(uint8_t* keyData,\n");
+  }
+  if (!crypto_engine) {
+    LOGE("OEMCrypto_GetKeyData: OEMCrypto Not Initialized.");
+    return OEMCrypto_ERROR_UNKNOWN_FAILURE;
   }
   if (!crypto_engine->supports_keybox()) {
     return OEMCrypto_ERROR_NOT_IMPLEMENTED;
@@ -786,6 +856,10 @@ OEMCryptoResult OEMCrypto_RewrapDeviceRSAKey(OEMCrypto_SESSION session,
       dump_hex("enc_rsa_key", enc_rsa_key, enc_rsa_key_length);
       dump_hex("enc_rsa_key_iv", enc_rsa_key_iv, wvcdm::KEY_IV_SIZE);
     }
+  }
+  if (!crypto_engine) {
+    LOGE("OEMCrypto_RewrapDeviceRSAKey: OEMCrypto Not Initialized.");
+    return OEMCrypto_ERROR_UNKNOWN_FAILURE;
   }
   if (!crypto_engine->supports_keybox()) {
     return OEMCrypto_ERROR_NOT_IMPLEMENTED;
@@ -926,8 +1000,20 @@ OEMCryptoResult OEMCrypto_LoadDeviceRSAKey(OEMCrypto_SESSION session,
     LOGE("[OEMCrypto_LoadDeviceRSAKey(): OEMCrypto_ERROR_INVALID_CONTEXT]");
     return OEMCrypto_ERROR_INVALID_CONTEXT;
   }
+  if (!crypto_engine) {
+    LOGE("OEMCrypto_LoadDeviceRSAKey: OEMCrypto Not Initialized.");
+    return OEMCrypto_ERROR_UNKNOWN_FAILURE;
+  }
   if (!crypto_engine->supports_keybox()) {
-    return OEMCrypto_ERROR_NOT_IMPLEMENTED;
+    // If we are not using keyboxes, the "wrapped RSA key" should actually be
+    // the magic value for baked-in certificates.
+    if (wrapped_rsa_key_length != sizeof(kBakedInCertificateMagicBytes) ||
+        memcmp(kBakedInCertificateMagicBytes, wrapped_rsa_key,
+               wrapped_rsa_key_length) != 0) {
+      return OEMCrypto_ERROR_INVALID_RSA_KEY;
+    } else {
+      return OEMCrypto_SUCCESS;
+    }
   }
   const WrappedRSAKey* wrapped
     = reinterpret_cast<const WrappedRSAKey*>(wrapped_rsa_key);
@@ -993,6 +1079,10 @@ OEMCryptoResult OEMCrypto_LoadTestRSAKey() {
   if (LogCategoryEnabled(kLoggingTraceOEMCryptoCalls)) {
     LOGI("-- OEMCryptoResult OEMCrypto_LoadTestRSAKey()\n");
   }
+  if (!crypto_engine) {
+    LOGE("OEMCrypto_LoadTestRSAKey: OEMCrypto Not Initialized.");
+    return OEMCrypto_ERROR_UNKNOWN_FAILURE;
+  }
   if (crypto_engine->LoadTestRSAKey()) return OEMCrypto_SUCCESS;
   return OEMCrypto_ERROR_UNKNOWN_FAILURE;
 }
@@ -1012,9 +1102,9 @@ OEMCryptoResult OEMCrypto_GenerateRSASignature(
       dump_hex("message", message, message_length);
     }
   }
-  if (NO_ERROR != crypto_engine->ValidateKeybox()) {
-    LOGE("[OEMCrypto_GenerateRSASignature(): ERROR_KEYBOX_INVALID]");
-    return OEMCrypto_ERROR_KEYBOX_INVALID;
+  if (!crypto_engine) {
+    LOGE("OEMCrypto_GenerateRSASignature: OEMCrypto Not Initialized.");
+    return OEMCrypto_ERROR_UNKNOWN_FAILURE;
   }
 
   if (signature_length == 0) {
@@ -1040,19 +1130,19 @@ OEMCryptoResult OEMCrypto_GenerateRSASignature(
     return OEMCrypto_ERROR_INVALID_CONTEXT;
   }
 
-  if (session_ctx->GenerateRSASignature(message,
-                                        message_length,
-                                        signature,
-                                        signature_length,
-                                        padding_scheme)) {
+  OEMCryptoResult sts = session_ctx->GenerateRSASignature(message,
+                                                          message_length,
+                                                          signature,
+                                                          signature_length,
+                                                          padding_scheme);
+  if (sts == OEMCrypto_SUCCESS) {
     if (LogCategoryEnabled(kLoggingTraceOEMCryptoCalls)) {
       if (wvcdm::g_cutoff >= wvcdm::LOG_VERBOSE) {
         dump_hex("signature", signature, *signature_length);
       }
     }
-    return OEMCrypto_SUCCESS;
   }
-  return OEMCrypto_ERROR_UNKNOWN_FAILURE;;
+  return sts;
 }
 
 extern "C"
@@ -1073,6 +1163,10 @@ OEMCryptoResult OEMCrypto_DeriveKeysFromSessionKey(
       dump_hex("enc_key_context", enc_key_context,
                (size_t)enc_key_context_length);
     }
+  }
+  if (!crypto_engine) {
+    LOGE("OEMCrypto_DeriveKeysFromSessionKey: OEMCrypto Not Initialized.");
+    return OEMCrypto_ERROR_UNKNOWN_FAILURE;
   }
   if (NO_ERROR != crypto_engine->ValidateKeybox()) {
     LOGE("[OEMCrypto_GenerateDerivedKeys(): ERROR_KEYBOX_INVALID]");
@@ -1116,14 +1210,25 @@ OEMCryptoResult OEMCrypto_DeriveKeysFromSessionKey(
 
 extern "C"
 uint32_t OEMCrypto_APIVersion() {
-  return 10;
+  // TODO(fredgc): Implement new API.
+  return 11;
+}
+
+extern "C"
+uint8_t OEMCrypto_Security_Patch_Level() {
+  uint8_t security_patch_level = crypto_engine->security_patch_level();
+  if (LogCategoryEnabled(kLoggingTraceOEMCryptoCalls)) {
+    LOGI("-- uint8_t OEMCrypto_Security_Patch_Level(); // returns %d.\n",
+         security_patch_level);
+  }
+  return security_patch_level;
 }
 
 extern "C"
 const char* OEMCrypto_SecurityLevel() {
   const char* security_level = crypto_engine->security_level();
   if (LogCategoryEnabled(kLoggingTraceOEMCryptoCalls)) {
-    LOGI("-- bool OEMCrypto_SecurityLevel(); // returns %s.\n", security_level);
+    LOGI("-- const char* OEMCrypto_SecurityLevel(); // returns %s.\n", security_level);
   }
   return security_level;
 }
@@ -1135,6 +1240,10 @@ OEMCryptoResult OEMCrypto_GetHDCPCapability(
   if (LogCategoryEnabled(kLoggingTraceOEMCryptoCalls)) {
     LOGI("-- OEMCryptoResult OEMCrypto_GetHDCPCapability(%p, %p)\n",
            current, maximum);
+  }
+  if (!crypto_engine) {
+    LOGE("OEMCrypto_GetHDCPCapability: OEMCrypto Not Initialized.");
+    return OEMCrypto_ERROR_UNKNOWN_FAILURE;
   }
   if (current == NULL) return OEMCrypto_ERROR_UNKNOWN_FAILURE;
   if (maximum == NULL) return OEMCrypto_ERROR_UNKNOWN_FAILURE;
@@ -1158,6 +1267,10 @@ OEMCryptoResult OEMCrypto_GetNumberOfOpenSessions(size_t* count) {
   if (LogCategoryEnabled(kLoggingTraceOEMCryptoCalls)) {
     LOGI("-- OEMCryptoResult OEMCrypto_GetNumberOfOpenSessions(%p)\n", count);
   }
+  if (!crypto_engine) {
+    LOGE("OEMCrypto_GetNumberOfOpenSessions: OEMCrypto Not Initialized.");
+    return OEMCrypto_ERROR_UNKNOWN_FAILURE;
+  }
   if (count == NULL) return OEMCrypto_ERROR_UNKNOWN_FAILURE;
   *count = crypto_engine->GetNumberOfOpenSessions();
   return OEMCrypto_SUCCESS;
@@ -1167,6 +1280,10 @@ extern "C"
 OEMCryptoResult OEMCrypto_GetMaxNumberOfSessions(size_t* maximum) {
   if (LogCategoryEnabled(kLoggingTraceOEMCryptoCalls)) {
     LOGI("-- OEMCryptoResult OEMCrypto_GetMaxNumberOfSessions(%p)\n", maximum);
+  }
+  if (!crypto_engine) {
+    LOGE("OEMCrypto_GetMaxNumberOfSessions: OEMCrypto Not Initialized.");
+    return OEMCrypto_ERROR_UNKNOWN_FAILURE;
   }
   if (maximum == NULL) return OEMCrypto_ERROR_UNKNOWN_FAILURE;
   *maximum = crypto_engine->GetMaxNumberOfSessions();
@@ -1198,6 +1315,10 @@ OEMCryptoResult OEMCrypto_Generic_Encrypt(OEMCrypto_SESSION session,
       dump_hex("in_buffer", in_buffer, buffer_length);
       dump_hex("iv", iv, wvcdm::KEY_IV_SIZE);
     }
+  }
+  if (!crypto_engine) {
+    LOGE("OEMCrypto_Generic_Encrypt: OEMCrypto Not Initialized.");
+    return OEMCrypto_ERROR_UNKNOWN_FAILURE;
   }
   if (NO_ERROR != crypto_engine->ValidateKeybox()) {
     LOGE("[OEMCrypto_Generic_Enrypt(): ERROR_KEYBOX_INVALID]");
@@ -1239,6 +1360,10 @@ OEMCryptoResult OEMCrypto_Generic_Decrypt(OEMCrypto_SESSION session,
       dump_hex("iv", iv, wvcdm::KEY_IV_SIZE);
     }
   }
+  if (!crypto_engine) {
+    LOGE("OEMCrypto_Generic_Decrypt: OEMCrypto Not Initialized.");
+    return OEMCrypto_ERROR_UNKNOWN_FAILURE;
+  }
   if (NO_ERROR != crypto_engine->ValidateKeybox()) {
     LOGE("[OEMCrypto_Generic_Decrypt(): ERROR_KEYBOX_INVALID]");
     return OEMCrypto_ERROR_KEYBOX_INVALID;
@@ -1277,6 +1402,10 @@ OEMCryptoResult OEMCrypto_Generic_Sign(OEMCrypto_SESSION session,
     if (wvcdm::g_cutoff >= wvcdm::LOG_VERBOSE) {
       dump_hex("in_buffer", in_buffer, buffer_length);
     }
+  }
+  if (!crypto_engine) {
+    LOGE("OEMCrypto_Generic_Sign: OEMCrypto Not Initialized.");
+    return OEMCrypto_ERROR_UNKNOWN_FAILURE;
   }
   if (NO_ERROR != crypto_engine->ValidateKeybox()) {
     LOGE("[OEMCrypto_Generic_Sign(): ERROR_KEYBOX_INVALID]");
@@ -1321,6 +1450,10 @@ OEMCryptoResult OEMCrypto_Generic_Verify(OEMCrypto_SESSION session,
       dump_hex("signature", signature, signature_length);
     }
   }
+  if (!crypto_engine) {
+    LOGE("OEMCrypto_Generic_Verify: OEMCrypto Not Initialized.");
+    return OEMCrypto_ERROR_UNKNOWN_FAILURE;
+  }
   if (NO_ERROR != crypto_engine->ValidateKeybox()) {
     LOGE("[OEMCrypto_Generic_Verify(): ERROR_KEYBOX_INVALID]");
     return OEMCrypto_ERROR_KEYBOX_INVALID;
@@ -1346,6 +1479,10 @@ OEMCryptoResult OEMCrypto_UpdateUsageTable() {
   if (LogCategoryEnabled(kLoggingTraceOEMCryptoCalls)) {
     LOGI("-- OEMCryptoResult OEMCrypto_UpdateUsageTable();\n");
   }
+  if (!crypto_engine) {
+    LOGE("OEMCrypto_UpdateUsageTable: OEMCrypto Not Initialized.");
+    return OEMCrypto_ERROR_UNKNOWN_FAILURE;
+  }
   if (!crypto_engine->supports_storage()) {
     return OEMCrypto_ERROR_NOT_IMPLEMENTED;
   }
@@ -1360,6 +1497,10 @@ OEMCryptoResult OEMCrypto_DeactivateUsageEntry(const uint8_t *pst,
     if (wvcdm::g_cutoff >= wvcdm::LOG_VERBOSE) {
       dump_hex("pst", pst, pst_length);
     }
+  }
+  if (!crypto_engine) {
+    LOGE("OEMCrypto_DeactivateUsageEntry: OEMCrypto Not Initialized.");
+    return OEMCrypto_ERROR_UNKNOWN_FAILURE;
   }
   if (!crypto_engine->supports_storage()) {
     return OEMCrypto_ERROR_NOT_IMPLEMENTED;
@@ -1379,6 +1520,10 @@ OEMCryptoResult OEMCrypto_ReportUsage(OEMCrypto_SESSION session,
     if (wvcdm::g_cutoff >= wvcdm::LOG_VERBOSE) {
       dump_hex("pst", pst, pst_length);
     }
+  }
+  if (!crypto_engine) {
+    LOGE("OEMCrypto_ReportUsage: OEMCrypto Not Initialized.");
+    return OEMCrypto_ERROR_UNKNOWN_FAILURE;
   }
   if (!crypto_engine->supports_storage()) {
     return OEMCrypto_ERROR_NOT_IMPLEMENTED;
@@ -1422,6 +1567,10 @@ OEMCryptoResult OEMCrypto_DeleteUsageEntry(OEMCrypto_SESSION session,
       dump_hex("signature", signature, signature_length);
     }
   }
+  if (!crypto_engine) {
+    LOGE("OEMCrypto_DeleteUsageEntry: OEMCrypto Not Initialized.");
+    return OEMCrypto_ERROR_UNKNOWN_FAILURE;
+  }
   if (!crypto_engine->supports_storage()) {
     return OEMCrypto_ERROR_NOT_IMPLEMENTED;
   }
@@ -1461,6 +1610,10 @@ OEMCryptoResult OEMCrypto_ForceDeleteUsageEntry(const uint8_t* pst,
       dump_hex("pst", pst, pst_length);
     }
   }
+  if (!crypto_engine) {
+    LOGE("OEMCrypto_ForceDeleteUsageEntry: OEMCrypto Not Initialized.");
+    return OEMCrypto_ERROR_UNKNOWN_FAILURE;
+  }
   if (!crypto_engine->supports_storage()) {
     return OEMCrypto_ERROR_NOT_IMPLEMENTED;
   }
@@ -1476,10 +1629,15 @@ OEMCryptoResult OEMCrypto_DeleteUsageTable() {
   if (LogCategoryEnabled(kLoggingTraceOEMCryptoCalls)) {
     LOGI("-- OEMCryptoResult OEMCrypto_DeleteUsageTable()\n");
   }
+  if (!crypto_engine) {
+    LOGE("OEMCrypto_DeleteUsageTable: OEMCrypto Not Initialized.");
+    return OEMCrypto_ERROR_UNKNOWN_FAILURE;
+  }
   if (!crypto_engine->supports_storage()) {
     return OEMCrypto_ERROR_NOT_IMPLEMENTED;
   }
   crypto_engine->usage_table()->Clear();
+  crypto_engine->usage_table()->UpdateTable();
   return OEMCrypto_SUCCESS;
 }
 

@@ -50,4 +50,10 @@ const char* CryptoEngine::security_level() {
   return "L3";
 }
 
+// This should start at 0, and be incremented only when a security patch has
+// been applied to the device that fixes a security bug.
+uint8_t CryptoEngine::security_patch_level() {
+  return 0;
+}
+
 }  // namespace wvoec_mock
