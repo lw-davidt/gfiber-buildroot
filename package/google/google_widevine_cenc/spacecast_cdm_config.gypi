@@ -10,7 +10,7 @@
     'device_name': '"Spacecastgfsc100"',
     'product_name': '"Spacecastgfsc100"',
     'buildinfo_data': '"UndefinedBuildInfo"',
-    'oemcrypto_version': 10,
+    'oemcrypto_version': 11,
     'oemcrypto_target': '<(DEPTH)/platforms/spacecast/oemcrypto/oemcrypto.gyp:oec_mock',
     'oemcrypto_max_sessions': '500',
     'oemcrypto_nonce_flood_threshold': '300',
