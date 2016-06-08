@@ -1,0 +1,26 @@
+diff --git a/cdm/test/cdm_test_main.cpp b/cdm/test/cdm_test_main.cpp
+index ed68408..8242feb 100644
+--- a/cdm/test/cdm_test_main.cpp
++++ b/cdm/test/cdm_test_main.cpp
+@@ -18,6 +18,9 @@
+ # include "oemcrypto_test.h"
+ #endif
+ 
++// Avoid pulling all nexus headers in widevine package
++extern "C" int NEXUS_Platform_AuthenticatedJoin(void *);
++
+ using namespace widevine;
+ 
+ TestHost* g_host = NULL;
+@@ -45,6 +48,11 @@ int main(int argc, char** argv) {
+     return 0;
+   }
+ 
++  if (NEXUS_Platform_AuthenticatedJoin(NULL)) {
++    fprintf(stderr, "NEXUS_Platform_AuthenticatedJoin failed\n");
++    return 1;
++  }
++
+   // Set up a Host so that tests and initialize the library.  This makes these
+   // services available to the tests.  We would do this in the test suite
+   // itself, but the core & OEMCrypto tests don't know they depend on this
