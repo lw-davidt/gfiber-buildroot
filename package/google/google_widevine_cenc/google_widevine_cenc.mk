@@ -7,6 +7,9 @@ GOOGLE_WIDEVINE_CENC_DEPENDENCIES = protobuf \
 				    host-protobuf \
 				    host-gyp \
 				    openssl
+ifeq ($(BR2_PACKAGE_BCM_NEXUS),y)
+GOOGLE_WIDEVINE_CENC_DEPENDENCIES += bcm_nexus
+endif
 
 GOOGLE_WIDEVINE_CENC_BUILD_ENV =
 GOOGLE_WIDEVINE_CENC_BUILD_ENV += V=1
